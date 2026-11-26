@@ -158,6 +158,25 @@
       "priority": "medium",
       "keywords": ["dependency", "dependencies", "upgrade packages", "npm update", "pip upgrade", "outdated", "vulnerability", "CVE", "security advisory", "breaking change", "migration guide", "peer dependency", "dependabot", "npm audit"],
       "intentPatterns": ["update\\s+(the\\s+)?(dependencies|packages|deps)", "upgrade\\s+(to|packages|deps)", "(fix|resolve|address)\\s+(the\\s+)?(vulnerabilit|CVE|security\\s+advisory)", "npm\\s+(audit|outdated|update)", "pip\\s+(audit|install\\s+--upgrade)", "breaking\\s+change(s)?\\s+(in|from|after)", "migrate\\s+to\\s+(v?\\d|new\\s+version|latest)"]
+    },
+    {
+      "skill": "spec-tdd",
+      "type": "workflow",
+      "priority": "high",
+      "keywords": ["baseline", "frozen baseline", "requirement drift", "impact analysis", "impact scan", "formal spec", "formal specification", "REQ-SPEC", "SPEC-ID", "evidence chain", "evidence trace", "spec-driven", "spec tdd", "spec coverage", "baseline alignment"],
+      "intentPatterns": [
+        "(建立|创建|生成|冻结|确认|锁定|理清楚|弄清楚|看看|规划|做|搞|开始).{0,10}(需求基线|基线)",
+        "(需求|规则).{0,8}(漂移|变更|澄清|收敛)",
+        "波及面.{0,10}(分析|扫描|评估|检查|有哪些|代码|范围|影响)",
+        "(形式化|结构化).{0,6}(需求|规约|表达)",
+        "基线.{0,4}(对齐|审计|检查|验证)",
+        "REQ-SPEC|SPEC-ID|证据链|全链路证据",
+        "evidence.{0,4}(chain|trace|mapping|link)",
+        "spec.{0,4}(driven|tdd|coverage|baseline)",
+        "impact.{0,4}(analysis|scan|check)",
+        "(before|prior.{0,3}to).{0,8}(coding|implement|development)",
+        "requirement.{0,4}(baseline|spec|formal|frozen)"
+      ]
     }
   ]
 }

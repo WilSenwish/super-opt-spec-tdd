@@ -52,6 +52,27 @@ function git(cmd, cwd) {
   }
 }
 
+/**
+ * 确保 4 个记忆栈文件存在——首次进入项目时自动创建空文件（带注释头）。
+ * hooks 只读不写，不会自动创建文件，所以这里在 SessionStart 时先补齐。
+ * context-snapshot.json 跳过——它是自动生成的 JSON 快照，无需预创建。
+ */
+const MEMORY_FILES = {
+  'state.md':           '# state.md — 当前任务进度快照（由 context-management skill 维护）\n',
+  'session-log.md':     '# session-log.md — 决策历史与 [saved] 条目\n',
+  'known-issues.md':    '# known-issues.md — 已知问题清单\n',
+  'project-map.md':     '# project-map.md — 项目结构地图（首次运行 project-map skill 后填充）\n',
+};
+
+function ensureMemoryFiles(cwd) {
+  for (const [name, header] of Object.entries(MEMORY_FILES)) {
+    const p = path.join(cwd, name);
+    if (!fs.existsSync(p)) {
+      try { fs.writeFileSync(p, header, 'utf8'); } catch { /* 权限问题跳过 */ }
+    }
+  }
+}
+
 function clip(text, max, note) {
   if (text.length <= max) return text;
   const cut = text.slice(0, Math.max(0, max - note.length - 1));
@@ -380,6 +401,9 @@ function main() {
   try { data = JSON.parse(input || '{}'); } catch {}
   const cwd = (data && typeof data.cwd === 'string' && data.cwd) || process.cwd();
 
+  // 确保记忆栈文件存在——没有就创建空文件（带注释头）
+  ensureMemoryFiles(cwd);
+
   const { text, injected } = buildMemory(cwd);
   recordInjected(cwd, data && data.session_id, injected, data && data.source);
 
@@ -405,6 +429,8 @@ if (require.main === module) {
     openKnownIssues,
     liveSavedEntries,
     recordInjected,
+    ensureMemoryFiles,
+    MEMORY_FILES,
     MEMORY_BUDGET,
   };
 }

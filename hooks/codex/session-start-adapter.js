@@ -115,7 +115,7 @@ function checkForUpdates() {
 // Project memory comes from the same builder the Claude Code hook uses, so the
 // two injectors cannot drift apart (they had: no state gate, raw known-issues,
 // a false snapshot label).
-const { buildMemory } = require('../session-memory');
+const { buildMemory, ensureMemoryFiles } = require('../session-memory');
 
 /**
  * Mirrors hooks/session-start: drop the router section that does not apply to
@@ -177,6 +177,7 @@ function spawnContextEngine(cwd) {
 }
 
 function memoryBlock(cwd) {
+  ensureMemoryFiles(cwd);
   const { text } = buildMemory(cwd);
   return text ? `\n\n${text}` : '';
 }

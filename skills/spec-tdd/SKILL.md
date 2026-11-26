@@ -1,0 +1,498 @@
+---
+name: spec-tdd
+description: 结构化需求基线 + REQ-SPEC 双向追溯的证据驱动开发流程。在 Optimized 的 full 级任务上叠加基线冻结、波及面扫描、四审计、测试规划前置，然后委托原生 TDD 执行。适用于需求基线、基线冻结、需求漂移、波及面分析、形式化规约、REQ-SPEC 证据链、验收标准基线。
+---
+
+# Superpowers 规约驱动 TDD 流程
+
+## 不可违反清单
+
+| # | 规则 | 反例 |
+|---|---|---|
+| **1** | **单真值源**：`baseline-spec.md` 冻结后是唯一真值源。plan / 代码 / 测试只能派生，不能反向改规则。 | 改代码绕过基线、规则变了不改 spec |
+| **2** | **每个任务有完成依据**：plan.md 每个子任务有独立的、可判的完成判定。 | "改 Service 层"，完成依据写"功能正常" |
+| **3** | **测试从规格出发而非实现**：每条断言回标 SPEC-ID。禁止断言抄实现里的 if 条件。 | 测试预期直接抄代码判断 → 实现和测试一起错 |
+| **4** | **顺序锁死 + TDD 红绿蓝不跳步**：基线 → 波及面 → 测试规划 → 编码；红→绿→蓝，跳过蓝=禁止。 | 先写实现后补测试；绿就停跳过重构 |
+| **5** | **双阶段评审 + 漂移拦截**：写完必须 Diff 审查 + 基线对照，漂移立即回流。 | 只看"能不能跑通"，漏删断言、漏改异常 message |
+| **6** | **仅跨会话/中断时交接**：会话中断、换会话或明确要求交接时，产出 HANDOFF.md（代码现场 + 验证状态 + 下一步）。同一会话连续跑完→可省。 | 同一会话跑完还要产 HANDOFF；换会话从零翻代码猜进度 |
+| **7** | **AI 权限分层**：禁止升级依赖、改 pom.xml、改 yml、连 DB。 | AI 顺手升级 SpringBoot 改 logback 连开发库 |
+| **8** | **方法不超 30 行且含多级缩进 → 必须拆分**（AGENTS.md SRP） | 80 行方法塞校验+组装+调用 |
+| **9** | **串行执行，禁止并行**（已明确标记可并行的独立子任务除外） | 同时跑多个子 Agent、同时写多个产物 |
+| **10** | **结果尽快落盘** | 每个子阶段完成立即写文件，不堆到最后一次性输出 |
+
+---
+
+## Optimized 路由对齐（本 fork 专属）
+
+Optimized 原生路由只吃 `skill-rules.json` 的 `keywords` + `intentPatterns`（score ≥ 2 才建议）。不认 `complexityFloor` / `requires` 扩展字段。
+
+**对齐策略：关键词写窄 + Skill 内部自降级**：
+- **micro** → Hook 的 `isMicroTask()` 已整段跳过，本 Skill 不会被注入
+- **lightweight** → 关键词全是 heavy domain 词（需求基线/REQ-SPEC/基线冻结），score 不够阈值
+- **full** → Skill 被建议加载 → 走完整 B1→E3
+
+若手动调用但发现 Code Change Scope < 3 个文件且无跨模块影响 → 只做"基线触碰检查"（触碰 REQ-SPEC/INV 则升级 full，否则退出）。
+
+---
+
+## 产出路径与命名约定
+
+### 路径
+
+所有文档产物统一放 **`项目根/docs/<当前分支名>/`**；脚本（DDL、数据迁移）放 **`项目根/docs/<当前分支名>/scripts/`**。`<当前分支名>` 通过 `git rev-parse --abbrev-ref HEAD` 获取；detached HEAD 时用 `git describe --tags --always --dirty`。
+
+### 命名（按变更顺序加序号前缀）
+
+序号体现三阶段推进顺序，全局可预测可排序：
+
+```
+阶段1 基线 + 审计：
+  01-baseline-spec.md           # 结构化规约（谓词/SPEC-ID/伪代码/不变量，真值源）
+  01-baseline-readable.md       # 从 spec 反向生成，便于开发人员快速阅读确认
+  02-impact-scan.md
+  03-audit-baseline.md
+
+阶段2 规划 + 契约：
+  04-exploration-options.md     # OPEN 项决策（影响后续测试规划边界，先产出）
+  05-test-plan-unit.md
+  07-plan.md                    # 实现方案
+  08-frontend-contract.md
+
+阶段3 交付报告 + 脚本：
+  09-spec-coverage-report.md
+  10-HANDOFF.md
+  scripts/01-ddl-<批次语义>.sql       # DDL 变更（关联批次合一个文件）
+  scripts/02-migration-<批次语义>.sql # 数据迁移（幂等，关联批次合一个文件）
+```
+
+### 脚本硬性约束
+
+- **DDL**（`CREATE/ALTER/DROP/ADD INDEX`）：同需求合一个文件，文件开头注释写执行前置条件（如"先跑 02-migration-*.sql"）
+- **迁移**（存量 `UPDATE/INSERT`）：同需求合一个文件；必须幂等（`ON DUPLICATE KEY UPDATE` 或 `WHERE <未迁移条件>`）
+- **不拆小文件**：同需求改 5 张表也合一个文件（分段用 `-- === 表 xxx ===` 注释）；不同批次才拆
+
+---
+
+## 需求三分区（贯穿全程）
+
+| 分区 | 含义 | 下游权限 |
+|---|---|---|
+| `SETTLED` 已收敛 | 必须落地、可与产品/存量代码对齐的规则 | 进规约→plan→测试→代码；私自改=漂移，拦截 |
+| `OPEN` 待探索 | 产品未考虑、存量歧义、多方案待取舍 | 禁止自行实现；汇总到 exploration-options.md 人工批量决策 |
+| `OUT_OF_SCOPE` 本次不做 | 明确延后/排除 | 全程禁止实现，禁止生成测试 |
+
+> `OPEN` 不是缺陷，是正常未知集合。**漂移 ≠ 发现未知**；漂移 = 在 SETTLED 上偷偷改规则。
+
+---
+
+## ⛔ 入口前置 gate（每次激活 spec-tdd 必须先跑）
+
+进入 B1 澄清之前，检查项目根目录 4 个记忆栈文件，缺失则创建（写入注释头）：
+- `state.md` → `# state.md — 当前任务进度快照`
+- `session-log.md` → `# session-log.md — 决策历史`
+- `known-issues.md` → `# known-issues.md — 已知问题清单`
+- `project-map.md` → `# project-map.md — 项目结构地图`
+
+双保险：session-memory.js 的 ensureMemoryFiles 只在 SessionStart 跑一次；中途切到 spec-tdd 或 hooks 不生效时文件缺失 → skill-activator.js recall 静默空读、历史决策丢失。
+
+---
+
+## 流程总览
+
+```
+阶段1: B1 澄清 → B2-0 存量调研 → B2 波及面扫描 → B3 规约基线 → B4 对齐审计 → ★ 关卡 A
+阶段2: P1 单测规划 → P2 实现方案 → P3 探索决策 → P4 前端契约 → ★ 关卡 B
+阶段3: E1 写测试跑红 → E2 写实现跑绿重构 → E3-0 四阶段评审 → E3 覆盖核对
+```
+
+**人工只介入两次（关卡 A、关卡 B）**，其余全部自动串行。
+
+---
+
+## 阶段1：Brainstorming
+
+保留 Superpowers 原生 `brainstorming` skill，在其收敛收尾追加 B2-0–B4 产物。
+
+**B1 澄清** — 逐条对齐产品意图；每个模糊点先判归属三分区，不强行脑补。同时记录：
+- **Code Change Scope**：预期改动的 Controller / Service / Mapper / 实体 / 枚举 / Redis Key / 表
+- **技术约束**：SpringBoot 版本、框架版本、不可修改的依赖、数据库 schema 限制等
+
+### B2-0 存量代码调研
+
+在扫波及面之前，先摸清现状。四步法：
+
+1. **找入口**：Controller / Handler / API 文档里找功能入口，记录入参、返回、路由
+2. **走调用链**：从入口顺着 Service → Mapper 走完，画 ASCII 调用链图
+3. **定位规则**：在代码里找所有相关的 `if`/`validate`/`exception`，区分业务规则 vs 参数校验 vs 异常处理，识别**散落的同一规则**（比如校验逻辑同时出现在 Controller 和 Service）
+4. **扫过期描述**：注释和代码是否一致？TODO/FIXME 还适用吗？文档（Swagger、README）和代码是否一致？
+
+> 扫过期描述是独立风险点——AI 信了过期注释就会按错的理解写代码。
+
+### B2 波及面扫描
+
+按 `references/impact-scan-checklist.md` 的 7 类逐项扫描**存量代码**。每条编号 `IMP-xx`，规约的每条 SPEC 必须绑定至少一条 IMP；无绑定者判"影响面漏扫"。
+
+#### 扫描方法
+
+1. 从需求关键词反查代码：`Grep` 入口方法名、表名、枚举值、Redis key 前缀、MQ topic
+2. 顺着调用链向上找调用方、向下找依赖
+3. 查历史：`git log --follow <file>`、`git blame` 关键分支，识别"为什么当初这么写"
+4. 查配置与开关：feature flag、灰度配置、定时任务、异步回调、重试策略
+
+#### 七类必扫项
+
+| # | 类别 | 必查点 |
+|---|---|---|
+| 1 | **模块与调用链** | 入口方法名、上游调用方（谁在调）、向下依赖（它调了谁） |
+| 2 | **数据契约** | 入参/出参字段变更？老字段序列化兼容？DTO 是否被多方复用？HTTP 状态码/错误码是否新增/复用？ |
+| 3 | **数据库** | 老数据兼容（存量行是否满足新约束）？事务边界？行锁范围扩大？死锁风险？ |
+| 4 | **缓存** | Key 冲突？过期策略？脏写？双写一致性？**变更后是否清理存量缓存（最容易漏）** |
+| 5 | **上下游与异步** | 下游超时/重试/降级/幂等键？MQ topic/分区键/消费幂等/消息版本？定时补偿是否同步改？ |
+| 6 | **既有业务规则与历史分支** | 白名单/灰度/兼容老版本/历史补偿逻辑；**默认策略=存量未被需求明确要求改动 → 保持原样，禁止顺手优化** |
+| 7 | **非功能约束** | 权限（接口鉴权/角色/数据可见范围）、幂等、限流/熔断、数据脱敏、观测指标/告警 |
+
+#### 输出分级 + 自检
+
+| 等级 | 判定 | 处置 |
+|---|---|---|
+| **高** | 数据一致性、资金、权限、跨服务契约、老数据兼容 | 必须有对应测试，E4 强制核对 |
+| **中** | 局部逻辑变更、缓存、单服务内链路 | 必须有用例或明确豁免 |
+| **低** | 注释、日志、内部重构 | 可豁免，需记录 |
+
+自检两问：① 每条 SPEC 都能指到 IMP？指不到说明影响面漏扫；② 每个 IMP-高 都能指到测试用例？指不到=高危裸奔。
+
+### B3 结构化规约
+
+仅对 `SETTLED` 生成。模板见 `references/baseline-spec-template.md`。
+
+#### 谓词书写记号
+
+`P(x)` 布尔谓词（必须可判定）、`state`/`order.status` 领域状态、`in(...)`/`out(...)` 入参出参、`ok`/`err(CODE)` 分支结果（CODE 须在错误码表登记）、`INV-xxx` 全程不变量。
+
+#### 反例清单（审计直接判不合格）
+
+| 反例 | 问题 |
+|---|---|
+| "取消要快" | 不可断言 → 降 OPEN 或写 `P(p99(latency)<500ms)` |
+| "尽量保证幂等" | 无判定条件 → 写 `P(重复请求仅生成 1 条记录)` |
+| "权限合理即可" | 无主体 → 写 `P(operator.hasRole("CS"))` |
+| "参考现有逻辑" | 无边界 → 显式列出存量分支与保留/修改 |
+| 一词多义 | 歧义 → 在术语表定义，全文统一 |
+
+#### 硬性要求
+
+- 每条唯一 ID：`REQ-SPEC-xxx`；不变量 `INV-xxx`
+- 二选一范式：**谓词断言**（前置 → 动作 → 后置成功/异常断言 + 不变量）优先；流程/分支/数据转换用**无实现细节的伪代码**（禁止出现类名、SQL、Redis 命令、框架注解）
+- 每条绑定波及项、可派生出可验证断言
+- 禁止出现不可断言的句子 → 降为 `OPEN`
+- **验收标准表**：每条 REQ-SPEC 对应至少一条 AC（前置条件 + 操作 + 预期结果），供人工可操作验证
+- **技术约束章节**：显式列出框架版本、依赖限制、DB schema 限制
+
+#### 不变量必查四类
+
+**事务边界、幂等性、权限边界、数据一致性**（跨表/跨缓存）——每条 INV 至少覆盖一类。
+
+### B4 对齐审计
+
+按 `references/audit-templates.md` 出四条检查。任一项有 `未覆盖/冲突/脑补/不可测`，**回流 B1/B2**，不进阶段2。
+
+#### 四条审计检查
+
+1. **需求全覆盖（双向）**：需求点 → SPEC 查漏；SPEC → 需求来源查脑补。**脑补比漏更危险**——脑补会让实现超出授权范围。
+2. **存量代码兼容**：每条 SPEC 与存量实现是否冲突？给 `文件:行号` 证据，冲突未解决不得进阶段2。
+3. **内部一致性**：错误码是否已在错误码表登记、状态机是否自相矛盾、术语是否一词多义。
+4. **可测试性**：能否派生可判定断言；不能则降级 `OPEN` 或补阈值。
+
+**结论判定**
+
+```markdown
+- 未覆盖：<n> 项（列 ID）
+- 脑补：<n> 项（列 ID）
+- 存量冲突：<n> 项
+- 内部矛盾：<n> 项
+- 不可测：<n> 项
+- 判定： ❌ 不通过，回流 B1/B2   |   ✅ 通过，可锁基线 V1
+```
+
+> 四张审计表的完整字段与示例见 `references/audit-templates.md`。
+> 关卡 A 通过后，`baseline-spec.md` 记版本号（V1）+ `BASELINE LOCKED`。
+
+---
+
+## 阶段2：Writing-plans
+
+替换原生 writing-plans 的产出顺序：**测试规划必须先于实现方案**。方案先出，测试就会被方案"倒推"成实现的自证。
+
+**基线守门检查清单**（Agent 在进入阶段2 前先过一遍）：
+- ☐ 读取已锁定的 baseline-spec.md，逐条过 SETTLED 规则和验收标准
+- ☐ 本次推进的任务对应哪条 SPEC-ID？写下来
+- ☐ 有没有 Out of Scope 的规则？标记出来
+- ☐ 技术约束有没有违反？
+- ☐ 读取 `state.md`（Optimized 记忆栈），确认其中的 `active_baseline` 字段与当前 baseline-spec.md 的版本号一致；不一致 → 先同步 state.md 再继续
+
+### P1 单元测试规划
+
+按 `references/test-plan-templates.md` 第一部分。只规划不写代码。
+
+#### 必查用例类型（缺一必须写豁免理由）
+
+| 类型 | 覆盖什么 |
+|---|---|
+| **正向** | 主流程 happy path |
+| **边界** | 空/null/0/上限/上限±1/超长/特殊字符/时区/金额精度 |
+| **异常** | 非法入参、下游失败、超时、并发冲突 |
+| **不变量** | `INV-xxx` 每条至少 1 条用例 |
+| **状态流转** | 非法状态迁移被拒 |
+
+#### 单元层硬性约束
+
+- 禁止 `@SpringBootTest`、禁止 `@Autowired` 真实 Bean
+- 禁止连真实 DB / Redis / HTTP
+- Mock 边界表必须列出：每个依赖怎么 mock、为什么 mock
+- 断言要求：**返回值具体内容、异常类型与错误码、关键状态变更**。禁止 `assertNotNull` 糊弄
+
+### P2 实现方案
+
+排在 P1 之后写。**采用 TASKS.md 任务卡片格式**，每个子任务必须包含：
+
+```markdown
+## T1：<任务名>
+- 目标：一句话说清这个任务要做什么
+- 前置依赖：哪个或哪些任务完成后才能开始
+- 完成依据：什么条件下算这个任务完成了（必须能独立判断通过/失败）
+- 关联文件：预计会改哪些文件
+- 关联 SPEC：哪条 SPEC-ID 由这个任务兑现
+- Blocked by：<前置任务号>
+```
+
+- 逐条标注"哪条 SPEC-ID 由哪段逻辑兑现"
+- 标注无法覆盖处、技术风险、取舍
+- 末尾加 ASCII **依赖关系图**
+
+#### 脚本产物规范（DDL + 数据迁移）
+
+E2 涉及 DB 变更时，同步产出 `docs/<分支>/scripts/` 下的两个文件：
+
+```
+scripts/01-ddl-<批次>.sql         # 本需求所有 DDL 合一个文件
+scripts/02-migration-<批次>.sql   # 本需求所有数据迁移合一个文件（幂等）
+```
+
+**硬性约束**：① DDL 与迁移必须分开（上线顺序不同）② 关联批次合一个文件，分段用 `-- === 表 xxx ===` 分隔 ③ 迁移必须幂等（`ON DUPLICATE KEY UPDATE` 或 `WHERE <未迁移条件>`）④ 文件开头注释写执行顺序 ⑤ plan.md 标注脚本与 SPEC 映射
+
+### P4 待探索决策单
+
+`exploration-options.md`：每个 `OPEN` 项给方案 A/B/C + 对接口/DB/单测的增量影响 + 风险 + 推荐倾向。人工三选一：采纳（并入 SETTLED 并重生成 plan/清单）／延后（转 OUT_OF_SCOPE）／维持存量。
+
+### P5 前端联调契约文档
+
+产出 `frontend-contract.md`：给前端的接口变更/新增告知 + 前端 AI 开发门禁，骨架见 `references/frontend-contract-template.md`。只列本次变更接口（不重复 Swagger），必含：路由/入参/出参/错误码/兼容性、字段级变更、状态机变更、幂等与并发、前端 AI 门禁。版本与 baseline-spec.md 同步。
+
+**前端 AI 门禁（核心）**：① 先读契约 → 输出缺口清单 → 停下等确认 → 才允许写代码；跳过 = 违规 ② 复核 9 类缺口 ③ 缺口反馈后端逐条确认；合理则契约升版本
+
+### 关卡 B 速查（任一不满足 = 不通过）
+
+- 每条用例有 SPEC-ID 且为 SETTLED；IMP-高 全覆盖或有豁免
+- 边界+异常分支 ≥ 正向；强断言（值/码/状态），无 `assertNotNull`
+- 无 `@SpringBootTest`、无真实中间件；Mock 边界说明完整
+- 未覆盖项有理由，无"待补"；frontend-contract.md 完整
+
+> 关卡 B 通过后 plan 锁定，新增规则只能回流阶段1。
+
+---
+
+## 阶段3：Execute-plan
+
+**先写测试后写实现，顺序锁死**。
+
+### ⛔ 编码前置阻塞检查点（E1 前必须通过）
+
+**缺任何一个 → 拒绝进入 E1，回流阶段2**：
+1. `docs/<分支>/05-test-plan-unit.md` 存在且非空
+2. 关卡 B 已通过（`07-plan.md` 有"关卡 B ✅"标记或 session-log.md 有 `[saved]`）
+
+**用户说"先写实现"/"跳过测试" → 拒绝，引导回流阶段2**。
+
+### E1–E2 单元层（顺序锁死，不可跳步）
+
+**E1 先写测试 → 跑红（⛔ 红线守门）→ E2 写实现 → 跑绿 → 重构**
+
+#### E1 红线守门（跑红后必查）
+
+**⛔ 禁止已有实现**：写测试前 grep 目标类——如果已存在且含测试要覆盖的方法 → 违规！先把实现移走，让测试真正跑红。
+
+> 例外：< 5 行 bug fix 且 baseline-spec 已覆盖 → 直接改代码 + 补回归测试。
+
+#### E2 编码规约快检（跑绿后必查）
+
+| # | 检查 | 命中 |
+|---|---|---|
+| 1 | `grep -r "@SpringBootTest\|@Autowired" src/test/` | ⛔ 违规 |
+| 2 | Service 方法超 30 行且 4+ 层缩进 | ⚠️ 标记拆分 |
+| 3 | `git diff pom.xml build.gradle *.yml` | ⛔ 违规（关卡 B 批准除外） |
+
+**3 项全过才允许重构和 E3-0 评审**。
+
+### E3-0 业务代码整体评审（四阶段）
+
+**阶段 A · Diff 审查（代码质量）**
+
+逐文件：命名清晰？异常处理完整？事务内有没有远程调用？硬编码？重复代码？越界改动？
+
+**阶段 B · 基线对照审查（规则覆盖）**
+
+逐条 SETTLED 规则：代码有没有实现？是否符合规则描述？对应单元测试？验收标准满足？有没有超出基线？
+
+**阶段 C · 设计原则审查（AGENTS.md 六关）**
+
+| 关 | 检查项 |
+|---|---|
+| ① SRP | 类名有 And/Or/Manager？import 跨 3 个无关领域？方法超 30 行？ |
+| ② 封装变化点 | 硬编码魔法值？核心流程里有 switch(type)？ |
+| ③ DIP | 业务层出现 new 具体类？ |
+| ④ LSP+CRP | 子类空实现父类方法？为复用 Utils 让业务类 extends BaseUtils？ |
+| ⑤ LoD | 超过 2 层点号链（`a.getB().getC().getD()`）？ |
+| ⑥ OCP | 新增业务类型必须改当前核心类？ |
+
+**阶段 D · 编码规约审查**（逐项检查 `references/clean-coding-conventions.md`）
+
+| 条目 | 检查 |
+|---|---|
+| §1 分层 | Controller 是否注入/调用 Mapper |
+| §2 继承 | Param/Vo 是否 extends 对应 Model；Model 是否有表外字段 |
+| §2.2 + §2.3 | 新增类是否有类级 JavaDoc + `@author Junbing.Chen`；Model 共用 Where 是否含 Param 专有条件 |
+| §2.4 + §4 | 改动类清无用 import；跨表/多语句 Service 是否有 `@Transactional` |
+| §5 N1~N6 + §7 重复代码 | 循环查库（N1）、无索引（N2）、无界查询（N3）、热路径无缓存（N4）、事务内远程调用/长循环（N5/N6）；同逻辑第三次出现是否已重构为公共组件 |
+| §8 + §9 + §10 | 方法名是否自解释、注释是否最小化；魔法值是否转常量/枚举；Excel/CSV 导入是否验内容、图片等二进制是否只验数量 |
+
+阶段 C/D 任一 = ⛔ 不通过，回流修复。
+
+### E3 覆盖核对
+
+产出 `spec-coverage-report.md`：
+
+报告必须含五项（表格模板见 `references/audit-templates.md`）：
+
+1. **SPEC 覆盖矩阵**：每条 SETTLED 对应用例，✅ 完整 / ⚠️ 单层 / ❌ 未覆盖
+2. **高危波及项覆盖**：每个 IMP-高 对应哪条用例，指不到 = 高危裸奔
+3. **越界检查**：`git diff --name-only` 与 Code Change Scope 求差
+4. **漂移检查**：对照 SETTLED 找实现/测试中超出或弱化基线的规则
+5. **总判定**：✅ 可交付 / ❌ 不可交付（列出阻塞项 → 修复重出报告）
+
+可运行 `scripts/check_spec_coverage.py` 机械校验（exit=0 全过，exit=1 有问题）。
+
+**增量测试边界**：只测 Code Change Scope 内的新增/修改分支；存量未改动逻辑不补历史用例；OPEN 区不生成强制用例。
+
+---
+
+## 漂移拦截
+
+| 发现 | 出口 |
+|---|---|
+| 阶段2/3 发现新缺口、连带隐性逻辑 | 停，回流阶段1 B1；归档记录 |
+| OPEN 项需拍板 | 关卡 B 批量决策 |
+| SETTLED 规则本身不对 | 回流改基线、升版本、重审计 |
+
+回流时必须生成交接块：执行到哪一步、发现什么缺口、回到哪个步骤、哪些代码改动可安全保留。
+
+**禁止**：私改 plan/代码/测试适配新想法；私改清单增删用例；为跑绿弱化或删除断言。
+
+---
+
+## 跨会话交接（仅会话中断/换会话时产出）
+
+会话中断、换会话或明确要求交接时，自动生成 `10-HANDOFF.md`，必须包含 6 段：
+
+1. **目标与约定**：当前任务目标 + baseline 关键约束
+2. **代码现场**：已改/新/删/重命名的文件清单 + Git 基线
+3. **进度与未完成项**：代码状态 vs 验证状态分开记录（写了≠测过）
+4. **验证记录**：跑过哪些命令、什么结果
+5. **运行状态**：开发服务/样例数据/依赖环境是否还在
+6. **下一步**：按顺序列出，第一条必须是「先核对 HANDOFF 引用的文件与工作区一致」
+
+新会话开场第一句：**「继续 HANDOFF.md 里的任务。先核对 HANDOFF 和它引用的 baseline / 关键源码，按下一步顺序推进。」**
+
+---
+
+## 渐进式使用
+
+- **轻量**：阶段1 + 阶段3，跳过独立测试规划文档（小需求、单方法改动、热修）
+- **标准**：完整三阶段（中等需求、新增接口、改业务规则）
+- **完整**：完整三阶段 + git worktree + 独立 Agent E3-0 评审（大重构、多模块、多 Agent）
+
+---
+
+## 交付物清单
+
+所有文档产物位于 **`项目根/docs/<当前分支名>/`**，脚本位于 **`项目根/docs/<当前分支名>/scripts/`**。
+
+```
+阶段1 基线 + 审计：
+  docs/<分支>/01-baseline-spec.md
+  docs/<分支>/01-baseline-readable.md
+  docs/<分支>/02-impact-scan.md            # 改动波及面扫描（每条 IMP-xx 带风险等级 + 证据）
+  docs/<分支>/03-audit-baseline.md         # 四条对齐审计
+
+阶段2 规划 + 契约：
+  docs/<分支>/04-exploration-options.md    # OPEN 项决策单
+  docs/<分支>/05-test-plan-unit.md         # 单元测试规划（必查 5 类用例 + Mock 边界）
+  docs/<分支>/07-plan.md                   # 实现方案（任务卡片 + SPEC-ID 映射 + 依赖图）
+  docs/<分支>/08-frontend-contract.md      # 前后端联调契约（接口变更/新增告知 + 前端 AI 开发门禁）
+
+阶段3 交付报告 + 脚本：
+  docs/<分支>/09-spec-coverage-report.md
+  docs/<分支>/10-HANDOFF.md
+  docs/<分支>/scripts/01-ddl-*.sql
+  docs/<分支>/scripts/02-migration-*.sql
+
+源码：
+  src/test/**/unit/          # 单元测试（禁止 @SpringBootTest）
+  业务源码
+```
+
+---
+
+## 何时读哪个 reference
+
+- 写测试规划详细表格 → `references/test-plan-templates.md`
+- 出审计/偏差/覆盖报告示例 → `references/audit-templates.md`
+- 填前后端联调契约 → `references/frontend-contract-template.md`
+- 写实现 / E3-0 编码规约审查 → `references/clean-coding-conventions.md`
+- 机械校验 SPEC-ID 覆盖 → `scripts/check_spec_coverage.py`（exit=0 全过，`--require-impact` 查 IMP 绑定）
+
+---
+
+## 快速导航速查表
+
+| 你现在想... | 第一步做什么 | 产出 |
+|---|---|---|
+| 聊清楚需求，别瞎写 | B1 澄清 + B2-0 存量调研 | 01-baseline-spec V1 + 01-baseline-readable |
+| 有了基线，想拆任务实现 | 走阶段2，先写 05，再写 07 | 测试规划 + 实现方案 + 08 前端契约 |
+| 想写代码了 | 走 E1 先写单元测试 → 跑红 → E2 实现（同步产出 scripts/*.sql）→ 绿 → 蓝 | 代码 + 单元测试 + DDL/迁移脚本 |
+| 写完想审一下 | 走 E3-0 四阶段评审（Diff + 基线对照 + 设计原则 + 编码规约） | 评审记录 |
+| 要换会话/明天再继续 | 走 E4 → 需要时产出 10-HANDOFF.md | 10-HANDOFF.md |
+| 发现需求变了 | 停止当前阶段 → 回流阶段1 B1 → 基线升版本 → 重跑审计和关卡 A | 更新后的全套产物（序号可能顺延新增） |
+
+---
+
+## Optimized 记忆栈对接（本 fork 专属）
+
+Optimized 五文件记忆栈是证据链的天然持久化载体。**核心原则：只追加，不覆盖原生字段**。spec-tdd 写入的内容全部用 `## Spec-TDD Baseline` 小节包裹，原生 context-management 写入的任务进度/plan 内容不受影响。
+
+| spec-tdd 产物 | 记忆文件 | 时机 | 写入 |
+|---|---|---|---|
+| baseline-spec V1 冻结 | `state.md` | 关卡 A 通过 | `## Spec-TDD Baseline` 小节：`active_baseline: <名>-V<n>` + `baseline_status: LOCKED` |
+| 基线冻结摘要 | `session-log.md` | 关卡 A 通过 | 追加 `[saved]` 条目：`Spec-TDD 基线冻结 <名> V<n>；SETTLED：…；OPEN：…；OUT_OF_SCOPE：…` |
+| IMP-高 未解决冲突 | `known-issues.md` | E4 完成 | 追加 open 条目，标注来源 `Spec-TDD IMP-xx` |
+
+**与原生 plan.md 的隔离**：spec-tdd 的 `07-plan.md` 放 `docs/<分支>/`，原生 context-management 的 `plan.md` 放项目根或 `.opencode/`——路径完全不同，互不影响。
+
+---
+
+## 与 Optimized 原生 Skill 协同（本 fork 专属）
+
+原生 skill **一律不修改**，三条协同规则：
+
+1. **先 brainstorming，再 spec-tdd**：若 `docs/<分支>/01-baseline-spec.md` 已存在 → Agent 直接读；否则 B1 先做简化版 brainstorming 再进 B2
+2. **E1-E2 委托原生 test-driven-development**：传入 prompt 必须包含三条约束（预期来自 05-test-plan-unit.md、禁 @SpringBootTest、每任务写 session-log `[saved]`）。原生 Skill 不自己决定做什么
+3. **spec-tdd 的 plan 替代原生 writing-plans**：`07-plan.md` 的 TASKS 格式 + SPEC-ID 映射就是原生 plan 的超集；subagent-driven-development 以它为基准

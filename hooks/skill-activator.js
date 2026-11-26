@@ -916,6 +916,17 @@ async function main() {
 
     // Run all pipelines independently
     const matches = matchSkills(prompt);
+
+    // ★ spec-tdd 记忆栈双保险：匹配到 spec-tdd 时确保 4 个文件存在
+    // session-memory.js 的 ensureMemoryFiles 只在 SessionStart 跑一次，
+    // 中途切到 spec-tdd 或 hooks 不生效时文件会缺失，导致 recall 静默空读。
+    if (matches.some(m => m.skill === 'spec-tdd')) {
+      try {
+        const { ensureMemoryFiles } = require('./session-memory');
+        ensureMemoryFiles(cwd);
+      } catch { /* 静默跳过，不阻塞 prompt 处理 */ }
+    }
+
     const keywords = extractKeywords(prompt, cwd);
     const memoryEntries = searchSessionLog(cwd, keywords);
     const knownIssueEntries = searchKnownIssues(cwd, keywords);
